@@ -1,4 +1,4 @@
-#!/usr/bin/python -W ignore::DeprecationWarning
+#!/usr/bin/env python3
 #
 # Script to manage S3-stored backups
 #
@@ -89,7 +89,7 @@ class BackupManager:
                 if keyparts[-1] == 'gpg':
                     keyparts.pop()
 
-                if keyparts[-1] != 'tar' and len(keyparts[-1]) is 2:
+                if keyparts[-1] != 'tar' and len(keyparts[-1]) == 2:
                     keyparts.pop()
 
                 if keyparts[-1] == 'tar':
@@ -97,7 +97,7 @@ class BackupManager:
 
             nextpart = keyparts.pop()
             if nextpart == 'COMPLETE':
-                print("Stray file: %s" % key.key)
+                print(("Stray file: %s" % key.key))
                 continue
             backupnum = int(nextpart)
             hostname = '.'.join(keyparts)
@@ -105,8 +105,8 @@ class BackupManager:
             lastmod = time.strptime(key.last_modified,
                                     '%Y-%m-%dT%H:%M:%S.000Z')
 
-            if hostname in backups.keys():
-                if not backupnum in backups[hostname].keys():
+            if hostname in list(backups.keys()):
+                if not backupnum in list(backups[hostname].keys()):
                     backups[hostname][backupnum] = {
                         'date': lastmod,
                         'hostname': hostname,
@@ -153,7 +153,7 @@ class BackupManager:
             self._backups = {}
             for bucket in self.backup_buckets:
                 backups_dict = self.get_backups_by_bucket(bucket)
-                for hostname, backups in backups_dict.items():
+                for hostname, backups in list(backups_dict.items()):
                     sys.stderr.write('.')
                     sys.stderr.flush()
                     if hostname not in self._backups:
@@ -177,8 +177,8 @@ class BackupManager:
     def backups_by_age(self):   # property
         "Returns a dict of {hostname: [(backupnum, age), ...]}"
         results = defaultdict(list)
-        for hostname, backups in self.all_backups.items():
-            for backupnum, statusdict in backups.items():
+        for hostname, backups in list(self.all_backups.items()):
+            for backupnum, statusdict in list(backups.items()):
                 results[hostname].append((backupnum,
                                           statusdict['finalized_age']))
         return results
@@ -189,7 +189,7 @@ def choose_host_to_backup(agedict, target_count=2):
 
     host_scores = defaultdict(int)
 
-    for hostname, backuplist in agedict.items():
+    for hostname, backuplist in list(agedict.items()):
         bl = sorted(backuplist, key=lambda x: x[1])
         if len(bl) > 0 and bl[0][1] == -1:
             # unfinalized backup alert
@@ -206,7 +206,7 @@ def choose_host_to_backup(agedict, target_count=2):
             newest = bl[-1]
             host_scores[hostname] -= log10(max(1, (oldest[1] - newest[1])))
 
-    for candidate, score in sorted(host_scores.items(),
+    for candidate, score in sorted(list(host_scores.items()),
                                    key=lambda x: x[1], reverse=True):
         yield (candidate, score)
 
@@ -216,7 +216,7 @@ def choose_backups_to_delete(agedict, target_count=2, max_age=30):
 
     decimate = defaultdict(list)
 
-    for hostname, backuplist in agedict.items():
+    for hostname, backuplist in list(agedict.items()):
         bl = []
         for backup in sorted(backuplist, key=lambda x: x[1]):
             if backup[1] > 0:
@@ -398,7 +398,7 @@ def main():
         elif not options.backupnum:
             # assuming highest finalized number
             options.backupnum = 0
-            for backup in bmgr.all_backups[options.host].keys():
+            for backup in list(bmgr.all_backups[options.host].keys()):
                 if bmgr.all_backups[options.host][backup]['finalized'] > 0:
                     options.backupnum = max(options.backupnum, backup)
             if options.backupnum == 0:
@@ -421,17 +421,17 @@ def main():
         to_ignore = int(options.keep)
         to_delete = []
         if options.host and options.backupnum:
-            print("Will delete backup: %s %i (forced)" % (
-                   options.host, options.backupnum))
+            print(("Will delete backup: %s %i (forced)" % (
+                   options.host, options.backupnum)))
             to_delete.append((options.host, options.backupnum))
         elif options.age:
             to_delete_dict = choose_backups_to_delete(bmgr.backups_by_age,
                                 target_count=to_ignore,
                                 max_age=int(options.age))
-            for hostname, backuplist in to_delete_dict.items():
+            for hostname, backuplist in list(to_delete_dict.items()):
                 for backupstat in backuplist:
-                    print("Will delete backup: %s %i (expired at %g days)" % (
-                            hostname, backupstat[0], backupstat[1] / 86400.0))
+                    print(("Will delete backup: %s %i (expired at %g days)" % (
+                            hostname, backupstat[0], backupstat[1] / 86400.0)))
                     to_delete.append((hostname, backupstat[0]))
 
         else:
@@ -477,7 +477,7 @@ def main():
         sys.stdout.write('%25s | %5s | %20s | %5s\n' % (
                 "Hostname", "Bkup#", "Age", "Files"))
         sys.stdout.write(('-' * 72) + '\n')
-        for hostname, backups in bmgr.all_backups.items():
+        for hostname, backups in list(bmgr.all_backups.items()):
             for backupnum in sorted(backups.keys()):
                 filecount = len(backups[backupnum]['keys'])
                 datestruct = backups[backupnum]['date']
@@ -503,6 +503,7 @@ def main():
                     hostname, backupnum, prettydelta, filecount, inprogress))
         sys.stdout.write('* == not yet finalized (Age == time of '
                          'last activity)\n')
+
 
 if __name__ == '__main__':
     main()
