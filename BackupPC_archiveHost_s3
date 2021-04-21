@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/backuppc/backuppc-archive-s3/venv/bin/python3
 # A BackupPC script to archive a host's files to Amazon S3.
 #
 # Point $Conf{ArchiveClientCmd} at me.
@@ -31,6 +31,8 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
+#
+# https://docs.aws.amazon.com/code-samples/latest/catalog/code-catalog-python-example_code-glacier.html
 
 import glob
 import hashlib
@@ -52,11 +54,11 @@ import secrets
 
 logger = logging.getLogger(__name__)
 
-sysloghandler = logging.handlers.SysLogHandler('/dev/log',
-                facility=logging.handlers.SysLogHandler.LOG_DAEMON)
-syslogformatter = logging.Formatter('%(filename)s: %(levelname)s: %(message)s')
-sysloghandler.setFormatter(syslogformatter)
-logger.addHandler(sysloghandler)
+# sysloghandler = logging.handlers.SysLogHandler('/dev/log',
+#                 facility=logging.handlers.SysLogHandler.LOG_DAEMON)
+# syslogformatter = logging.Formatter('%(filename)s: %(levelname)s: %(message)s')
+# sysloghandler.setFormatter(syslogformatter)
+# logger.addHandler(sysloghandler)
 
 consolehandler = logging.StreamHandler(sys.stdout)
 consoleformatter = logging.Formatter('%(asctime)s: %(levelname)s: %(message)s')
@@ -86,6 +88,7 @@ def encrypt_file(filename, key, compress='/bin/cat'):
         compress_algo = 'none'
 
     cmd = ['/usr/bin/gpg', '--batch', '--no-tty']
+    cmd.extend(['--homedir', '/home/backuppc/.gnupg/'])
     cmd.extend(['--compress-algo', compress_algo])
     cmd.extend(['--output', '%s.gpg' % filename])
     cmd.extend(['--passphrase-fd', '0'])
@@ -97,7 +100,7 @@ def encrypt_file(filename, key, compress='/bin/cat'):
         raise RuntimeError('%s is not an executable file!' % cmd[0])
 
     my_proc = Popen(cmd, preexec_fn=lambda : os.nice(10), stdin=PIPE, stdout=PIPE)
-    my_proc.communicate(key)
+    my_proc.communicate(key.encode('utf8'))
 
     if os.path.exists(filename + '.gpg'):
         oldfilesize = os.path.getsize(filename)
@@ -147,13 +150,14 @@ def verify_file(bucket, filename):
     return False
 
 
-def upload_archive(vault_name, src_data):
+def upload_archive(vault_name, src_data, region_name, access_id, access_key):
     """Add an archive to an Amazon S3 Glacier vault.
 
     The upload occurs synchronously.
 
     :param vault_name: string
     :param src_data: bytes of data or string reference to file spec
+    :param region_name: string
     :return: If src_data was added to vault, return dict of archive
     information, otherwise None
     """
@@ -174,7 +178,10 @@ def upload_archive(vault_name, src_data):
                      ' for the argument \'src_data\' is not supported.')
         return None
 
-    glacier = boto3.client('glacier')
+    glacier = boto3.client('glacier',
+                           region_name=region_name,
+                           aws_access_key_id=access_id,
+                           aws_secret_access_key=access_key)
     try:
         archive = glacier.upload_archive(vaultName=vault_name,
                                          body=object_data)
@@ -224,7 +231,7 @@ def encryption_worker(in_q, out_q, unlink_q):
     time.sleep(5)   # settle
 
 
-def sending_worker(in_q, out_q, vault_name):
+def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key):
     "Sends things from the in_q using the send_file method"
     start_time = time.time()
     counter = 0
@@ -239,7 +246,7 @@ def sending_worker(in_q, out_q, vault_name):
             try:
                 logger.info("sending_worker: sending %s", filename)
                 # vault_name = open_archive(accesskey, sharedkey, host)
-                archive = upload_archive(vault_name, filename)
+                archive = upload_archive(vault_name, filename, region_name, access_id, access_key)
                 # key = send_file(bucket, filename)
                 # key.set_acl('private')
                 # key.close()
@@ -417,7 +424,7 @@ if __name__ == '__main__':
         p.start()
         procs.append(p)
 
-    send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name))
+    send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name, secrets.region_name, secrets.accesskey, secrets.sharedkey))
     send_p.start()
     procs.append(send_p)
 
