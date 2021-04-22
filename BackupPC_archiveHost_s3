@@ -67,6 +67,8 @@ logger.addHandler(consolehandler)
 
 logger.setLevel(logging.DEBUG)
 
+RESULT_LOG_PATH = "/home/backuppc/log"
+
 
 class VerifyError(Exception):
     pass
@@ -306,10 +308,10 @@ def main():
         host = sys.argv[4]
         bkupNum = int(sys.argv[5])
         compPath = sys.argv[6]
-        fileExt = sys.argv[7]
+        # fileExt = sys.argv[7]
         splitSize = int(sys.argv[8])
         outLoc = sys.argv[9]
-        parfile = sys.argv[10]
+        # parfile = sys.argv[10]
         share = sys.argv[11]
 
     for i in [tarCreate, compPath, splitPath, parPath]:
@@ -428,8 +430,7 @@ def main():
         p.start()
         procs.append(p)
 
-    log_filename = os.path.join(secrets.log_path, '/', f'archive-{host}-{bkupNum}.log')
-
+    log_filename = os.path.join(RESULT_LOG_PATH, '/', f'archive-{host}-{bkupNum}.log')
     send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name, secrets.region_name, secrets.accesskey, secrets.sharedkey, log_filename))
     send_p.start()
     procs.append(send_p)
