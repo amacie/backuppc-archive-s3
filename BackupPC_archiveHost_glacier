@@ -1,4 +1,4 @@
-#!/usr/bin/python -W ignore::DeprecationWarning
+#!/home/backuppc/backuppc-archive-s3/venv/bin/python3
 # A BackupPC script to archive a host's files to Amazon S3.
 #
 # Point $Conf{ArchiveClientCmd} at me.
@@ -31,6 +31,8 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
+#
+# https://docs.aws.amazon.com/code-samples/latest/catalog/code-catalog-python-example_code-glacier.html
 
 import glob
 import hashlib
@@ -50,13 +52,19 @@ import logging.handlers
 
 import secrets
 
+RESULT_LOG_PATH = "/home/backuppc/log"
+
 logger = logging.getLogger(__name__)
 
-sysloghandler = logging.handlers.SysLogHandler('/dev/log',
-                facility=logging.handlers.SysLogHandler.LOG_DAEMON)
-syslogformatter = logging.Formatter('%(filename)s: %(levelname)s: %(message)s')
-sysloghandler.setFormatter(syslogformatter)
-logger.addHandler(sysloghandler)
+# sysloghandler = logging.handlers.SysLogHandler('/dev/log',
+#                 facility=logging.handlers.SysLogHandler.LOG_DAEMON)
+# syslogformatter = logging.Formatter('%(filename)s: %(levelname)s: %(message)s')
+# sysloghandler.setFormatter(syslogformatter)
+# logger.addHandler(sysloghandler)
+filehandler = logging.handlers.RotatingFileHandler(os.path.join(RESULT_LOG_PATH, 'archive_run.log'))
+fhformatter = logging.Formatter('%(filename)s: %(levelname)s: %(message)s')
+filehandler.setFormatter(fhformatter)
+logger.addHandler(filehandler)
 
 consolehandler = logging.StreamHandler(sys.stdout)
 consoleformatter = logging.Formatter('%(asctime)s: %(levelname)s: %(message)s')
@@ -70,18 +78,23 @@ class VerifyError(Exception):
     pass
 
 
+class UploadError(Exception):
+    pass
+
+
 def is_exe(fpath):
     return os.path.exists(fpath) and os.access(fpath, os.X_OK)
 
 
 def encrypt_file(filename, key, compress='/bin/cat'):
     compressmap = {'cat': 'none', 'gzip': 'ZLIB', 'bzip2': 'BZIP2'}
-    if os.path.basename(compress) in compressmap.keys():
+    if os.path.basename(compress) in list(compressmap.keys()):
         compress_algo = compressmap[os.path.basename(compress)]
     else:
         compress_algo = 'none'
 
-    cmd =  ['/usr/bin/gpg', '--batch', '--no-tty']
+    cmd = ['/usr/bin/gpg', '--batch', '--no-tty']
+    cmd.extend(['--homedir', '/home/backuppc/.gnupg/'])
     cmd.extend(['--compress-algo', compress_algo])
     cmd.extend(['--output', '%s.gpg' % filename])
     cmd.extend(['--passphrase-fd', '0'])
@@ -92,29 +105,39 @@ def encrypt_file(filename, key, compress='/bin/cat'):
     else:
         raise RuntimeError('%s is not an executable file!' % cmd[0])
 
-    proc = Popen(cmd, preexec_fn=lambda : os.nice(10), stdin=PIPE, stdout=PIPE)
-    proc.communicate(key)
+    my_proc = Popen(cmd, preexec_fn=lambda: os.nice(10), stdin=PIPE, stdout=PIPE)
+    my_proc.communicate(key.encode('utf8'))
 
     if os.path.exists(filename + '.gpg'):
         oldfilesize = os.path.getsize(filename)
         newfilesize = os.path.getsize(filename + '.gpg')
         compressed = ((oldfilesize - newfilesize) / float(oldfilesize)) * 100
-        logger.debug('encrypt_file: %s %s by %.2f%% (%i -> %i bytes)' % (filename, 'shrunk' if oldfilesize>newfilesize else 'grew', compressed, oldfilesize, newfilesize))
+        logger.debug('encrypt_file: %s %s by %.2f%% (%i -> %i bytes)' % (filename, 'shrunk' if oldfilesize > newfilesize else 'grew', compressed, oldfilesize, newfilesize))
         return filename + '.gpg'
     else:
         raise RuntimeError('output file does not exist: %s.gpg' % filename)
 
 
-def open_s3(accesskey, sharedkey, host):
-    client = boto3.client('s3', aws_access_key_id=accesskey, aws_secret_access_key=sharedkey)
-    mybucketname = (accesskey + '-bkup-' + host).lower()
-    response = client.get_bucket(Bucket=mybucketname)
-    if not response:
-        logger.info('open_s3: creating new bucket %s' % mybucketname)
-        client.create_bucket(Bucket=mybucketname)
-    client.put_bucket_acl(ACL='private',
-                          Bucket=mybucketname)
-    return mybucketname
+def open_archive(region_name, access_id, access_key):
+    logger.info(f'open_archive: connecting to region: {region_name}')
+    glacier = boto3.client('glacier',
+                           region_name=region_name,
+                           aws_access_key_id=access_id,
+                           aws_secret_access_key=access_key)
+
+    return glacier
+
+
+# def open_s3(accesskey, sharedkey, host):
+#     conn = S3Connection(accesskey, sharedkey, is_secure=True)
+#     mybucketname = (accesskey + '-bkup-' + host).lower()
+#     try:
+#         bucket = conn.get_bucket(mybucketname)
+#     except boto.exception.S3ResponseError:
+#         logger.info('open_s3: creating new bucket %s' % mybucketname)
+#         bucket = conn.create_bucket(mybucketname)
+#     bucket.set_acl('private')
+#     return bucket
 
 
 def handle_progress(transmitted, pending):
@@ -122,7 +145,7 @@ def handle_progress(transmitted, pending):
 
 
 def verify_file(bucket, filename):
-    "Returns True if the file size and md5sum match, False otherwise"
+    """Returns True if the file size and md5sum match, False otherwise"""
     basefilename = os.path.basename(filename)
     key = bucket.get_key(basefilename)
     stat = os.stat(filename)
@@ -137,28 +160,71 @@ def verify_file(bucket, filename):
     return False
 
 
-def send_file(mybucketname, filename, accesskey, sharedkey):
-    basefilename = os.path.basename(filename)
+def upload_archive(glacier, vault_name, src_data, description=''):
+    """Add an archive to an Amazon S3 Glacier vault.
 
-    s3 = boto3.resource('s3', aws_access_key_id=accesskey, aws_secret_access_key=sharedkey)
-    s3.meta.client.upload_file(filename, mybucketname, basefilename)
+    The upload occurs synchronously.
 
-    # FIXME: boto3 has a different upload/verify process
-    # if k.exists():
-    #     if verify_file(bucket, filename):
-    #         logger.warning("send_file: %s already exists and is identical, not overwriting", basefilename)
-    #         return k
-    #     logger.warning("send_file: %s already exists on S3, overwriting", basefilename)
-    #
-    # k.set_contents_from_filename(filename, cb=handle_progress, reduced_redundancy=True)
-    #
-    # logger.debug("send_file: %s sent, verifying fidelity", filename)
-    # if not verify_file(bucket, filename):
-    #     raise VerifyError("verify failed")
-    # return k
+    :param glacier: object
+    :param vault_name: string
+    :param src_data: bytes of data or string reference to file spec
+    :param description: string of optional text describing the data
+    :return: If src_data was added to vault, return dict of archive
+    information, otherwise None
+    """
+
+    # The src_data argument must be of type bytes or string
+    # Construct body= parameter
+    if isinstance(src_data, bytes):
+        object_data = src_data
+    elif isinstance(src_data, str):
+        try:
+            object_data = open(src_data, 'rb')
+            # possible FileNotFoundError/IOError exception
+        except Exception as e:
+            logging.error(e)
+            return None
+    else:
+        logger.error('Type of ' + str(type(src_data)) +
+                     ' for the argument \'src_data\' is not supported.')
+        return None
+
+    try:
+        archive = glacier.upload_archive(vaultName=vault_name,
+                                         body=object_data,
+                                         archiveDescription=description)
+    except ClientError as e:
+        logger.error(e)
+        return None
+    finally:
+        if isinstance(src_data, str):
+            object_data.close()
+
+    # Return dictionary of archive information
+    return archive
+
+
+# def send_file(bucket, filename):
+#     basefilename = os.path.basename(filename)
+#     k = Key(bucket)
+#     k.key = basefilename
+#
+#     if k.exists():
+#         if verify_file(bucket, filename):
+#             logger.warning("send_file: %s already exists and is identical, not overwriting", basefilename)
+#             return k
+#         logger.warning("send_file: %s already exists on S3, overwriting", basefilename)
+#
+#     k.set_contents_from_filename(filename, cb=handle_progress, reduced_redundancy=True)
+#
+#     logger.debug("send_file: %s sent, verifying fidelity", filename)
+#     if not verify_file(bucket, filename):
+#         raise VerifyError("verify failed")
+#     return k
+
 
 def encryption_worker(in_q, out_q, unlink_q):
-    "Encrypts things from the in_q, puts them in the out_q"
+    """Encrypts things from the in_q, puts them in the out_q"""
     start_time = time.time()
     counter = 0
     for filename, gpgkey, comppath in iter(in_q.get, 'STOP'):
@@ -173,11 +239,13 @@ def encryption_worker(in_q, out_q, unlink_q):
     time.sleep(5)   # settle
 
 
-def sending_worker(in_q, out_q, accesskey, sharedkey, host):
-    "Sends things from the in_q using the send_file method"
+def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key, index_fn):
+    """Sends things from the in_q using the send_file method"""
     start_time = time.time()
     counter = 0
     for filename in iter(in_q.get, 'STOP'):
+        if filename.endswith('.COMPLETE'):
+            continue
         sending_start = time.time()
         counter += 1
         retry_count = 0
@@ -187,12 +255,21 @@ def sending_worker(in_q, out_q, accesskey, sharedkey, host):
         while retry_count <= max_retries and not done:
             try:
                 logger.info("sending_worker: sending %s", filename)
-                mybucketname = open_s3(accesskey, sharedkey, host)
-                key = send_file(mybucketname, filename)
-                key.set_acl('private')
-                key.close()
+                glacier = open_archive(region_name, access_id, access_key)
+                # vault_name = open_archive(accesskey, sharedkey, host)
+                archive = upload_archive(glacier, vault_name, filename, f'Original name: {filename}')
+                with open(index_fn, 'wab') as fd:
+                    line_out = f"{filename};{archive['archiveId']};{archive['checksum']};{archive['location']}"
+                    fd.write(line_out.encode('utf8'))
+                # key = send_file(bucket, filename)
+                # key.set_acl('private')
+                # key.close()
+                if archive is not None:
+                    logger.info(f'Archive {archive["archiveId"]} added to {vault_name}')
+                else:
+                    raise UploadError()
                 done = True
-            except (boto.exception.S3ResponseError, socket.error, VerifyError) as e:
+            except (UploadError, socket.error, VerifyError) as e:
                 retry_count += 1
                 sleeptime = 2**retry_count
                 logger.error('sending_worker: exception %s, retrying in %i seconds (%i/%i)', e, sleeptime, retry_count, max_retries)
@@ -211,6 +288,7 @@ def sending_worker(in_q, out_q, accesskey, sharedkey, host):
     logger.debug("sending_worker: queue is empty, terminating after %i items in %i seconds", counter, time.time() - start_time)
     time.sleep(5)   # settle
 
+
 def unlink_worker(in_q):
     start_time = time.time()
     counter = 0
@@ -226,7 +304,7 @@ def unlink_worker(in_q):
     time.sleep(5)   # settle
 
 
-if __name__ == '__main__':
+def main():
     # Read in arguments, verify that they match the BackupPC standard exactly
     if len(sys.argv) != 12:
         sys.stderr.write("Usage: %s tarCreatePath splitPath parPath host bkupNum compPath fileExt splitSize outLoc parFile share\n" % sys.argv[0])
@@ -238,14 +316,14 @@ if __name__ == '__main__':
         host = sys.argv[4]
         bkupNum = int(sys.argv[5])
         compPath = sys.argv[6]
-        fileExt = sys.argv[7]
+        # fileExt = sys.argv[7]
         splitSize = int(sys.argv[8])
         outLoc = sys.argv[9]
-        parfile = sys.argv[10]
+        # parfile = sys.argv[10]
         share = sys.argv[11]
 
     for i in [tarCreate, compPath, splitPath, parPath]:
-        if i is not '' and not is_exe(i):
+        if i != '' and not is_exe(i):
             sys.stderr.write('Error: %s is not an executable program\n' % i)
             sys.exit(1)
 
@@ -270,7 +348,7 @@ if __name__ == '__main__':
         encrypted = split = tarred = final = False
         if keyparts[-1] == 'gpg':
             keyparts.pop()
-        if keyparts[-1] != 'tar' and len(keyparts[-1]) is 2:
+        if keyparts[-1] != 'tar' and len(keyparts[-1]) == 2:
             keyparts.pop()
         if keyparts[-1] == 'tar':
             keyparts.pop()
@@ -314,14 +392,14 @@ if __name__ == '__main__':
         logger.debug("main: executing tarcmd: %s > %s", ' '.join(tarcmd), outfile)
 
         tarfp = open(outfile, 'wb')
-        proc = Popen(tarcmd, preexec_fn=lambda : os.nice(10), stdout=tarfp)
+        proc = Popen(tarcmd, preexec_fn=lambda: os.nice(10), stdout=tarfp)
         proc.communicate()
         tarfp.close()
 
         if splitcmd:
             logger.debug("main: executing splitcmd: %s", ' '.join(splitcmd))
             tarfp = open(outfile, 'rb')
-            proc = Popen(splitcmd, preexec_fn=lambda : os.nice(10), stdin=tarfp)
+            proc = Popen(splitcmd, preexec_fn=lambda: os.nice(10), stdin=tarfp)
             proc.communicate()
             tarfp.close()
             unlink_queue.put(outfile)
@@ -360,7 +438,9 @@ if __name__ == '__main__':
         p.start()
         procs.append(p)
 
-    send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.accesskey, secrets.sharedkey, host))
+    # log_filename = os.path.join(RESULT_LOG_PATH, '/', f'{host}-{bkupNum}-index.csv')
+    log_filename = f'/home/backuppc/log/{host}-{bkupNum}-index.csv'
+    send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name, secrets.region_name, secrets.accesskey, secrets.sharedkey, log_filename))
     send_p.start()
     procs.append(send_p)
 
@@ -406,7 +486,7 @@ if __name__ == '__main__':
             unlink_queue.put('STOP')
             unlink_queue_closed = True
 
-    for qname, q in queues.items():
+    for qname, q in list(queues.items()):
         time.sleep(5)  # settle
         if not q.empty():
             logger.critical("main: queue %s not empty!", qname)
@@ -415,3 +495,7 @@ if __name__ == '__main__':
             logger.debug("main: queue %s is empty", qname)
 
     logger.info("main: completed run after %i seconds", (time.time() - beginning))
+
+
+if __name__ == '__main__':
+    main()
