@@ -192,7 +192,7 @@ def upload_archive(glacier, vault_name, src_data, description=''):
     try:
         archive = glacier.upload_archive(vaultName=vault_name,
                                          body=object_data,
-                                         description=description)
+                                         archiveDescription=description)
     except ClientError as e:
         logger.error(e)
         return None
@@ -244,6 +244,8 @@ def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key, 
     start_time = time.time()
     counter = 0
     for filename in iter(in_q.get, 'STOP'):
+        if filename.endswith('.COMPLETE'):
+            continue
         sending_start = time.time()
         counter += 1
         retry_count = 0
@@ -436,7 +438,8 @@ def main():
         p.start()
         procs.append(p)
 
-    log_filename = os.path.join(RESULT_LOG_PATH, '/', f'archive-{host}-{bkupNum}.log')
+    #log_filename = os.path.join(RESULT_LOG_PATH, '/', f'archive-{host}-{bkupNum}.log')
+    log_filename = f'/home/backuppc/log/archive-{host}-{bkupNum}.log'
     send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name, secrets.region_name, secrets.accesskey, secrets.sharedkey, log_filename))
     send_p.start()
     procs.append(send_p)
