@@ -45,7 +45,7 @@ from multiprocessing import Process, Queue, cpu_count
 from subprocess import *
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 import logging
 import logging.handlers
@@ -269,7 +269,7 @@ def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key, 
                 else:
                     raise UploadError()
                 done = True
-            except (UploadError, socket.error, VerifyError) as e:
+            except (UploadError, socket.error, VerifyError, EndpointConnectionError) as e:
                 retry_count += 1
                 sleeptime = 2**retry_count
                 logger.error('sending_worker: exception %s, retrying in %i seconds (%i/%i)', e, sleeptime, retry_count, max_retries)

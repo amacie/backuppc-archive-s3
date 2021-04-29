@@ -69,6 +69,27 @@ def retrieve_inventory(vault_name):
     return response
 
 
+def describe_job(vault_name, job_id):
+    """Retrieve the status of an Amazon S3 Glacier job, such as an inventory-retrieval job
+
+    To retrieve the output of the finished job, call Glacier.Client.get_job_output()
+
+    :param vault_name: string
+    :param job_id: string. The job ID was returned by Glacier.Client.initiate_job().
+    :return: Dictionary of information related to the job. If error, return None
+.
+    """
+
+    # Retrieve the status of the job
+    glacier = boto3.client('glacier')
+    try:
+        response = glacier.describe_job(vaultName=vault_name, jobId=job_id)
+    except ClientError as e:
+        logging.error(e)
+        return None
+    return response
+
+
 def retrieve_inventory_results(vault_name, job_id):
     """Retrieve the results of an Amazon Glacier inventory-retrieval job
 
@@ -154,6 +175,14 @@ def main():
             if response is not None:
                 console.print(f'Initiated inventory-retrieval job for {vault_name}')
                 console.print(f'Retrieval Job ID: {response["jobId"]}')
+        elif args.action == 'status':
+            # Retrieve the job's status
+            if args.job is not None:
+                response = describe_job(vault_name, args.job)
+                if response is not None:
+                    logging.info(f'Job Type: {response["Action"]},  Status: {response["StatusCode"]}')
+            else:
+                console.print("Job ID is required to get the job status", style="yellow")
         elif args.action == 'get_inventory':
             if args.job is not None:
                 # Retrieve the job results
