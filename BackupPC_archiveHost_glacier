@@ -258,7 +258,7 @@ def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key, 
                 glacier = open_archive(region_name, access_id, access_key)
                 # vault_name = open_archive(accesskey, sharedkey, host)
                 archive = upload_archive(glacier, vault_name, filename, f'Original name: {filename}')
-                with open(index_fn, 'wab') as fd:
+                with open(index_fn, 'ab') as fd:
                     line_out = f"{filename};{archive['archiveId']};{archive['checksum']};{archive['location']}"
                     fd.write(line_out.encode('utf8'))
                 # key = send_file(bucket, filename)
@@ -438,8 +438,8 @@ def main():
         p.start()
         procs.append(p)
 
-    # log_filename = os.path.join(RESULT_LOG_PATH, '/', f'{host}-{bkupNum}-index.csv')
-    log_filename = f'/home/backuppc/log/{host}-{bkupNum}-index.csv'
+    log_filename = os.path.join(RESULT_LOG_PATH, '/', f'{host}-{bkupNum}-index.csv')
+    # log_filename = f'/home/backuppc/log/{host}-{bkupNum}-index.csv'
     send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name, secrets.region_name, secrets.accesskey, secrets.sharedkey, log_filename))
     send_p.start()
     procs.append(send_p)
