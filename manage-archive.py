@@ -15,11 +15,27 @@
 import argparse
 import json
 import logging
+import sqlobject
+import dateutil.parser
+import os
+
 import rich.console
 import boto3
 from botocore.exceptions import ClientError
 
-VALID_ACTIONS = ("list", "start_inventory", "get_inventory", "delete")
+VALID_ACTIONS = ("list", "start_inventory", "status", "get_inventory", "delete")
+JOBS_DIR = "jobs"
+JOB_STATUS_DB = f"{JOBS_DIR}/status.db"
+
+
+class Job(sqlobject.SQLObject):
+    job_id = sqlobject.StringCol()
+    action = sqlobject.StringCol(length=20, default="")
+    creation_date = sqlobject.DateCol(default=None)
+    has_completed = sqlobject.BoolCol(default=False)
+    completion_date = sqlobject.DateCol(default=None)
+    status_code = sqlobject.StringCol(length=10, default="")
+    response_text = sqlobject.StringCol()
 
 
 def list_vaults(max_vaults=10, iter_marker=None):
@@ -134,7 +150,7 @@ def main():
 
     parser.add_argument('action', metavar='ACTION', type=str,
                         help='Specify the action to perform: {}'.format(', '.join(VALID_ACTIONS)))
-    parser.add_argument('vault', metavar='VAULT_NAME', type=str,
+    parser.add_argument('vault', metavar='VAULT_NAME', type=str, nargs='?', default=None,
                         help='The name of the AWS Glacier Vault')
     parser.add_argument('-d', '--debug', action='store_true',
                         help='Display all log messages')
@@ -145,6 +161,11 @@ def main():
     args = parser.parse_args()
     vault_name = args.vault
     archive_ids = []
+
+    db_filename = os.path.abspath(JOB_STATUS_DB)
+    connection_string = 'sqlite:' + db_filename
+    connection = sqlobject.connectionForURI(connection_string)
+    sqlobject.sqlhub.processConnection = connection
 
     with rich.console.Console() as console:
         if args.debug:
@@ -170,19 +191,29 @@ def main():
                     break
                 vaults, marker = list_vaults(iter_marker=marker)
         elif args.action == 'start_inventory':
-            # Initiate an inventory retrieval job
-            response = retrieve_inventory(vault_name)
-            if response is not None:
-                console.print(f'Initiated inventory-retrieval job for {vault_name}')
-                console.print(f'Retrieval Job ID: {response["jobId"]}')
-        elif args.action == 'status':
-            # Retrieve the job's status
-            if args.job is not None:
-                response = describe_job(vault_name, args.job)
+            if args.vault is not None:
+                # Initiate an inventory retrieval job
+                response = retrieve_inventory(vault_name)
                 if response is not None:
-                    logging.info(f'Job Type: {response["Action"]},  Status: {response["StatusCode"]}')
+                    console.print(f'Initiated inventory-retrieval job for {vault_name}')
+                    console.print(f'Retrieval Job ID: {response["jobId"]}')
+                    Job(job_id=response['jobId'],
+                        response_text=response)
             else:
-                console.print("Job ID is required to get the job status", style="yellow")
+                console.print("Vault Name required for inventory results", style="yellow")
+        elif args.action == 'status':
+            for job in Job.select():
+                if not job.has_completed:
+                    response = describe_job(vault_name, job.job_id)
+                    if response is not None:
+                        job.status_code = response['StatusCode']
+                        job.action = response['Action']
+                        job.creation_date = dateutil.parser.parse(response['CreationDate'])
+                        job.has_completed = response['Completed']
+                        job.status_code = response['StatusCode']
+                        if 'CompletionDate' in response:
+                            job.completion_date = dateutil.parser.parse(response['CompletionDate'])
+                console.print(f"{job.job_id[:10]}...:  {job.action}  {job.status_code}")
         elif args.action == 'get_inventory':
             if args.job is not None:
                 # Retrieve the job results
@@ -208,6 +239,8 @@ def main():
                 success = delete_archive(vault_name, archive_id)
                 if success:
                     console.print(f'Deleted archive {archive_id} from {vault_name}')
+        elif args.action == 'init':
+            Job.createTable(ifNotExists=True)
         else:
             console.print(f'ERROR: Action [bold]{args.action}[/bold] is not recognized.', style='red')
             console.print('Valid actions are: [cyan]{}[cyan]'.format(' '.join(VALID_ACTIONS)))

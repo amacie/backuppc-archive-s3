@@ -438,8 +438,8 @@ def main():
         p.start()
         procs.append(p)
 
-    log_filename = os.path.join(RESULT_LOG_PATH, '/', f'{host}-{bkupNum}-index.csv')
-    # log_filename = f'/home/backuppc/log/{host}-{bkupNum}-index.csv'
+    # log_filename = os.path.join(RESULT_LOG_PATH, '/', f'{host}-{bkupNum}-index.csv')
+    log_filename = f'/home/backuppc/log/{host}-{bkupNum}-index.csv'
     send_p = Process(name="send_worker", target=sending_worker, args=(send_queue, unlink_queue, secrets.vault_name, secrets.region_name, secrets.accesskey, secrets.sharedkey, log_filename))
     send_p.start()
     procs.append(send_p)
