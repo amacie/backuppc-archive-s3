@@ -13,6 +13,7 @@
 # OF ANY KIND, either express or implied. See the License for the specific
 # language governing permissions and limitations under the License.
 import argparse
+import datetime
 import json
 import logging
 import sqlobject
@@ -23,13 +24,14 @@ import rich.console
 import boto3
 from botocore.exceptions import ClientError
 
-VALID_ACTIONS = ("list", "start_inventory", "status", "get_inventory", "delete")
+VALID_ACTIONS = ("list", "start_inventory", "status", "get_inventory", "history", "delete")
 JOBS_DIR = "jobs"
 JOB_STATUS_DB = f"{JOBS_DIR}/status.db"
 
 
 class Job(sqlobject.SQLObject):
     job_id = sqlobject.StringCol()
+    vault_name = sqlobject.StringCol(length=20, default=None)
     action = sqlobject.StringCol(length=20, default="")
     creation_date = sqlobject.DateCol(default=None)
     has_completed = sqlobject.BoolCol(default=False)
@@ -145,6 +147,13 @@ def delete_archive(vault_name, archive_id):
     return True
 
 
+def connect_db(db_path):
+    db_filename = os.path.abspath(db_path)
+    connection_string = 'sqlite:' + db_filename
+    connection = sqlobject.connectionForURI(connection_string)
+    sqlobject.sqlhub.processConnection = connection
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -162,10 +171,7 @@ def main():
     vault_name = args.vault
     archive_ids = []
 
-    db_filename = os.path.abspath(JOB_STATUS_DB)
-    connection_string = 'sqlite:' + db_filename
-    connection = sqlobject.connectionForURI(connection_string)
-    sqlobject.sqlhub.processConnection = connection
+    connect_db(JOB_STATUS_DB)
 
     with rich.console.Console() as console:
         if args.debug:
@@ -198,13 +204,14 @@ def main():
                     console.print(f'Initiated inventory-retrieval job for {vault_name}')
                     console.print(f'Retrieval Job ID: {response["jobId"]}')
                     Job(job_id=response['jobId'],
-                        response_text=response)
+                        vault_name=vault_name,
+                        response_text=json.dumps(response))
             else:
                 console.print("Vault Name required for inventory results", style="yellow")
         elif args.action == 'status':
             for job in Job.select():
                 if not job.has_completed:
-                    response = describe_job(vault_name, job.job_id)
+                    response = describe_job(job.vault_name, job.job_id)
                     if response is not None:
                         job.status_code = response['StatusCode']
                         job.action = response['Action']
@@ -213,18 +220,20 @@ def main():
                         job.status_code = response['StatusCode']
                         if 'CompletionDate' in response:
                             job.completion_date = dateutil.parser.parse(response['CompletionDate'])
+                        job.response_text = json.dumps(response)
                 console.print(f"{job.job_id[:10]}...:  {job.action}  {job.status_code}")
         elif args.action == 'get_inventory':
-            if args.job is not None:
-                # Retrieve the job results
-                inventory = retrieve_inventory_results(vault_name, args.job)
-                if inventory is not None:
-                    # Output some of the inventory information
-                    console.print(f'Vault ARN: {inventory["VaultARN"]}')
-                    for archive in inventory['ArchiveList']:
-                        console.print(f'  Size: {archive["Size"]:6d},  Archive ID: {archive["ArchiveId"]}')
-            else:
-                console.print("Job ID is required to get the inventory results", style="yellow")
+            expiry = datetime.date.today() - datetime.timedelta(days=1)
+            for job in Job.select(Job.q.has_completed == True):
+                if job.completion_date > expiry:
+                    # Retrieve the job results
+                    inventory = retrieve_inventory_results(job.vault_name, job.job_id)
+                    if inventory is not None:
+                        job.response_text = json.dumps(inventory)
+                        # Output some of the inventory information
+                        console.print(f'Vault ARN: {inventory["VaultARN"]}')
+                        for archive in inventory['ArchiveList']:
+                            console.print(f'  Size: {archive["Size"]:6d},  Archive ID: {archive["ArchiveId"]},  Description: {archive["ArchiveDescription"]}')
         elif args.action == 'delete':
             with open('archive.txt') as fd:
                 for line in fd:
@@ -241,6 +250,12 @@ def main():
                     console.print(f'Deleted archive {archive_id} from {vault_name}')
         elif args.action == 'init':
             Job.createTable(ifNotExists=True)
+        elif args.action == 'history':
+            for job in Job.select(Job.q.has_completed == True):
+                inventory = json.loads(job.response_text)
+                console.print(f"Vault ARN: {inventory['VaultARN']}")
+                for archive in inventory['ArchiveList']:
+                    console.print(f'{archive["ArchiveId"]}; {archive["Size"]}; {archive["ArchiveDescription"]}')
         else:
             console.print(f'ERROR: Action [bold]{args.action}[/bold] is not recognized.', style='red')
             console.print('Valid actions are: [cyan]{}[cyan]'.format(' '.join(VALID_ACTIONS)))

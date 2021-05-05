@@ -257,10 +257,10 @@ def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key, 
                 logger.info("sending_worker: sending %s", filename)
                 glacier = open_archive(region_name, access_id, access_key)
                 # vault_name = open_archive(accesskey, sharedkey, host)
-                archive = upload_archive(glacier, vault_name, filename, f'Original name: {filename}')
-                with open(index_fn, 'ab') as fd:
+                archive = upload_archive(glacier, vault_name, filename, os.path.basename(filename))
+                with open(index_fn, 'a') as fd:
                     line_out = f"{filename};{archive['archiveId']};{archive['checksum']};{archive['location']}"
-                    fd.write(line_out.encode('utf8'))
+                    fd.write(line_out)
                 # key = send_file(bucket, filename)
                 # key.set_acl('private')
                 # key.close()
