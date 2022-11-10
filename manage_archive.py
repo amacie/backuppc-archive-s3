@@ -153,7 +153,16 @@ def connect_db(db_path):
     connection = sqlobject.connectionForURI(connection_string)
     sqlobject.sqlhub.processConnection = connection
     if not dbp.exists():
+        dbp.mkdir(parents=True)
         Job.createTable()
+
+
+def human_readable_size(size, decimal_places=3):
+    for unit in ['B', 'KiB', 'MiB', 'GiB', 'TiB']:
+        if size < 1024.0:
+            break
+        size /= 1024.0
+    return f"{size:.{decimal_places}f} {unit}"
 
 
 def main():
@@ -192,7 +201,7 @@ def main():
             while True:
                 # Print info about retrieved vaults
                 for vault in vaults:
-                    console.print(f'{vault["NumberOfArchives"]:3d}  {vault["SizeInBytes"]:12d}  {vault["VaultName"]}')
+                    console.print(f'{vault["NumberOfArchives"]:3d}  {human_readable_size(vault["SizeInBytes"]):12d}  {vault["VaultName"]}')
 
                 # If no more vaults exist, exit loop, otherwise retrieve the next batch
                 if marker is None:
