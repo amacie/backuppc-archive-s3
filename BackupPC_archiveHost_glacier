@@ -1,5 +1,5 @@
 #!/home/backuppc/backuppc-archive-s3/venv/bin/python3
-# A BackupPC script to archive a host's files to Amazon S3.
+# A BackupPC script to archive a host's files to Amazon S3 Glacier.
 #
 # Point $Conf{ArchiveClientCmd} at me.
 # Requires python-boto
@@ -37,6 +37,7 @@
 import glob
 import hashlib
 import os
+from pathlib import Path
 import socket
 import sys
 import time
@@ -259,7 +260,7 @@ def sending_worker(in_q, out_q, vault_name, region_name, access_id, access_key, 
                 # vault_name = open_archive(accesskey, sharedkey, host)
                 archive = upload_archive(glacier, vault_name, filename, os.path.basename(filename))
                 with open(index_fn, 'a') as fd:
-                    line_out = f"{filename};{archive['archiveId']};{archive['checksum']};{archive['location']}"
+                    line_out = f"{filename};{archive['archiveId']};{archive['checksum']};{archive['location']}\n"
                     fd.write(line_out)
                 # key = send_file(bucket, filename)
                 # key.set_acl('private')

@@ -18,7 +18,7 @@ import json
 import logging
 import sqlobject
 import dateutil.parser
-import os
+from pathlib import Path
 
 import rich.console
 import boto3
@@ -148,10 +148,12 @@ def delete_archive(vault_name, archive_id):
 
 
 def connect_db(db_path):
-    db_filename = os.path.abspath(db_path)
-    connection_string = 'sqlite:' + db_filename
+    dbp = Path(db_path)
+    connection_string = 'sqlite:' + str(dbp.absolute())
     connection = sqlobject.connectionForURI(connection_string)
     sqlobject.sqlhub.processConnection = connection
+    if not dbp.exists():
+        Job.createTable()
 
 
 def main():
