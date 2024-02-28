@@ -108,12 +108,12 @@ def encrypt_file(filename, key, compress='/bin/cat'):
 def open_s3(accesskey, sharedkey, host):
     client = boto3.client('s3', aws_access_key_id=accesskey, aws_secret_access_key=sharedkey)
     mybucketname = (accesskey + '-bkup-' + host).lower()
-    response = client.get_bucket(Bucket=mybucketname)
+    response = client.create_bucket(ACL='private', Bucket=mybucketname)
     if not response:
         logger.info('open_s3: creating new bucket %s' % mybucketname)
-        client.create_bucket(Bucket=mybucketname)
-    client.put_bucket_acl(ACL='private',
-                          Bucket=mybucketname)
+        client.create_bucket(ACL='private', Bucket=mybucketname)
+    #client.put_bucket_acl(ACL='private',
+    #                      Bucket=mybucketname)
     return mybucketname
 
 
@@ -188,9 +188,9 @@ def sending_worker(in_q, out_q, accesskey, sharedkey, host):
             try:
                 logger.info("sending_worker: sending %s", filename)
                 mybucketname = open_s3(accesskey, sharedkey, host)
-                key = send_file(mybucketname, filename)
-                key.set_acl('private')
-                key.close()
+                key = send_file(mybucketname, filename, accesskey, sharedkey)
+                #key.set_acl('private')
+                #key.close()
                 done = True
             except (boto.exception.S3ResponseError, socket.error, VerifyError) as e:
                 retry_count += 1
@@ -341,7 +341,7 @@ if __name__ == '__main__':
                 and not i.endswith('.COMPLETE')):
             # A tar file, unencrypted, needs encrypted.
             logger.debug("main: adding %s to gpg_queue", i)
-            gpg_queue.put([i, secrets.gpgsymmetrickey, compPath])
+            gpg_queue.put([i, secrets.gpgsymmetrickey.encode(), compPath])
         else:
             # either encryption is off, or the file is already encrypted
             logger.debug("main: adding %s to send_queue", i)
